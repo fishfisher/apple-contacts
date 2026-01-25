@@ -95,36 +95,31 @@ Examples:
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		if showID {
-			fmt.Fprintln(w, "NAME\tPHONE\tEMAIL\tID")
+			fmt.Fprintln(w, "NAME\tORGANIZATION\tID")
 		} else {
-			fmt.Fprintln(w, "NAME\tPHONE\tEMAIL")
+			fmt.Fprintln(w, "NAME\tORGANIZATION")
 		}
 
 		for _, c := range results {
-			phone := ""
-			if len(c.Phones) > 0 {
-				phone = c.Phones[0].Value
-			}
-			email := ""
-			if len(c.Emails) > 0 {
-				email = c.Emails[0].Value
+			org := c.Organization
+			if org == "" {
+				org = "-"
 			}
 			if showID {
-				// Truncate ID for display (show last part after colon)
 				shortID := c.ID
 				if len(shortID) > 20 {
 					shortID = shortID[:17] + "..."
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", c.Name, phone, email, shortID)
+				fmt.Fprintf(w, "%s\t%s\t%s\n", c.Name, org, shortID)
 			} else {
-				fmt.Fprintf(w, "%s\t%s\t%s\n", c.Name, phone, email)
+				fmt.Fprintf(w, "%s\t%s\n", c.Name, org)
 			}
 		}
 		w.Flush()
 
 		fmt.Printf("\nFound %d contact(s)\n", len(results))
 		if showID && !searchShowID {
-			fmt.Println("(IDs shown due to duplicate names - use 'show --id <ID>' for specific contact)")
+			fmt.Println("(IDs shown due to duplicate names - use 'show <name>' for details)")
 		}
 		return nil
 	},

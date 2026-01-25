@@ -83,198 +83,174 @@ func escapeJS(s string) string {
 	return s
 }
 
-// contactExtractorJS returns the JavaScript code to extract contact data
-func contactExtractorJS(includeDetails bool) string {
-	base := `
-        var phones = [];
-        try {
-            var phs = p.phones();
-            for (var j = 0; j < phs.length; j++) {
-                phones.push({label: phs[j].label() || '', value: phs[j].value() || ''});
-            }
-        } catch(e) {}
-
-        var emails = [];
-        try {
-            var ems = p.emails();
-            for (var k = 0; k < ems.length; k++) {
-                emails.push({label: ems[k].label() || '', value: ems[k].value() || ''});
-            }
-        } catch(e) {}
-`
-	if includeDetails {
-		base += `
-        var addresses = [];
-        try {
-            var addrs = p.addresses();
-            for (var m = 0; m < addrs.length; m++) {
-                var a = addrs[m];
-                addresses.push({
-                    label: a.label() || '',
-                    street: a.street() || '',
-                    city: a.city() || '',
-                    state: a.state() || '',
-                    zip: a.zip() || '',
-                    country: a.country() || ''
-                });
-            }
-        } catch(e) {}
-
-        var birthday = '';
-        try {
-            var bd = p.birthDate();
-            if (bd) {
-                var month = ('0' + (bd.getMonth() + 1)).slice(-2);
-                var day = ('0' + bd.getDate()).slice(-2);
-                birthday = bd.getFullYear() + '-' + month + '-' + day;
-            }
-        } catch(e) {}
-
-        var contact = {
-            id: p.id(),
-            name: p.name() || '',
-            firstName: p.firstName() || '',
-            lastName: p.lastName() || '',
-            nickname: p.nickname() || '',
-            organization: p.organization() || '',
-            jobTitle: p.jobTitle() || '',
-            department: p.department() || '',
-            birthday: birthday,
-            note: p.note() || '',
-            phones: phones,
-            emails: emails,
-            addresses: addresses
-        };
-`
-	} else {
-		base += `
-        var birthday = '';
-        try {
-            var bd = p.birthDate();
-            if (bd) {
-                var month = ('0' + (bd.getMonth() + 1)).slice(-2);
-                var day = ('0' + bd.getDate()).slice(-2);
-                birthday = bd.getFullYear() + '-' + month + '-' + day;
-            }
-        } catch(e) {}
-
-        var contact = {
-            id: p.id(),
-            name: p.name() || '',
-            firstName: p.firstName() || '',
-            lastName: p.lastName() || '',
-            organization: p.organization() || '',
-            birthday: birthday,
-            phones: phones,
-            emails: emails
-        };
-`
-	}
-	return base
-}
-
 // SearchContacts searches for contacts by name (contains match)
 func SearchContacts(term string) ([]Contact, error) {
 	return SearchContactsAdvanced(SearchOptions{Name: term})
 }
 
 // SearchContactsAdvanced searches contacts with multiple criteria
+// Uses batch property access for performance
 func SearchContactsAdvanced(opts SearchOptions) ([]Contact, error) {
-	// Build the match conditions
-	var conditions []string
-
-	if opts.Name != "" {
-		conditions = append(conditions, fmt.Sprintf(`(p.name() || '').toLowerCase().indexOf('%s') !== -1`, escapeJS(strings.ToLower(opts.Name))))
-	}
-	if opts.Email != "" {
-		conditions = append(conditions, fmt.Sprintf(`emailsStr.toLowerCase().indexOf('%s') !== -1`, escapeJS(strings.ToLower(opts.Email))))
-	}
-	if opts.Phone != "" {
-		// Normalize phone for comparison (remove non-digits for matching)
-		conditions = append(conditions, fmt.Sprintf(`phonesStr.indexOf('%s') !== -1`, escapeJS(opts.Phone)))
-	}
-	if opts.Organization != "" {
-		conditions = append(conditions, fmt.Sprintf(`(p.organization() || '').toLowerCase().indexOf('%s') !== -1`, escapeJS(strings.ToLower(opts.Organization))))
-	}
-	if opts.Note != "" {
-		conditions = append(conditions, fmt.Sprintf(`(p.note() || '').toLowerCase().indexOf('%s') !== -1`, escapeJS(strings.ToLower(opts.Note))))
-	}
-	if opts.Address != "" {
-		conditions = append(conditions, fmt.Sprintf(`addressStr.toLowerCase().indexOf('%s') !== -1`, escapeJS(strings.ToLower(opts.Address))))
-	}
-	if opts.Birthday != "" {
-		// Birthday in MM-DD format
-		conditions = append(conditions, fmt.Sprintf(`birthdayMMDD === '%s'`, escapeJS(opts.Birthday)))
-	}
-	if opts.BirthdayMonth > 0 && opts.BirthdayMonth <= 12 {
-		conditions = append(conditions, fmt.Sprintf(`birthdayMonth === %d`, opts.BirthdayMonth))
-	}
-	if opts.Any != "" {
-		anyLower := escapeJS(strings.ToLower(opts.Any))
-		conditions = append(conditions, fmt.Sprintf(`(
-            (p.name() || '').toLowerCase().indexOf('%s') !== -1 ||
-            (p.organization() || '').toLowerCase().indexOf('%s') !== -1 ||
-            (p.note() || '').toLowerCase().indexOf('%s') !== -1 ||
-            (p.nickname() || '').toLowerCase().indexOf('%s') !== -1 ||
-            emailsStr.toLowerCase().indexOf('%s') !== -1 ||
-            phonesStr.indexOf('%s') !== -1 ||
-            addressStr.toLowerCase().indexOf('%s') !== -1
-        )`, anyLower, anyLower, anyLower, anyLower, anyLower, anyLower, anyLower))
+	// For simple name-only search, use the fast whose() query
+	if opts.Name != "" && opts.Email == "" && opts.Phone == "" &&
+		opts.Organization == "" && opts.Note == "" && opts.Address == "" &&
+		opts.Birthday == "" && opts.BirthdayMonth == 0 && opts.Any == "" {
+		return searchByNameFast(opts.Name)
 	}
 
-	if len(conditions) == 0 {
+	// For complex queries, fetch all data in batch and filter in JS
+	return searchAdvanced(opts)
+}
+
+// searchByNameFast uses Contacts' native whose() for fast name search
+// Only fetches scalar properties (name, org) - no phones/emails for speed
+func searchByNameFast(term string) ([]Contact, error) {
+	script := fmt.Sprintf(`
+var Contacts = Application("Contacts");
+var searchTerm = '%s';
+var matches = Contacts.people.whose({name: {_contains: searchTerm}});
+var results = [];
+
+// Batch fetch all scalar properties at once (very fast)
+var ids = matches.id();
+var names = matches.name();
+var firstNames = matches.firstName();
+var lastNames = matches.lastName();
+var orgs = matches.organization();
+
+for (var i = 0; i < ids.length; i++) {
+    results.push({
+        id: ids[i],
+        name: names[i] || '',
+        firstName: firstNames[i] || '',
+        lastName: lastNames[i] || '',
+        organization: orgs[i] || ''
+    });
+}
+JSON.stringify(results);
+`, escapeJS(term))
+
+	output, err := execJXA(script)
+	if err != nil {
+		return nil, err
+	}
+
+	if output == "" || output == "null" {
 		return []Contact{}, nil
 	}
 
-	matchCondition := strings.Join(conditions, " && ")
+	var contacts []Contact
+	if err := json.Unmarshal([]byte(output), &contacts); err != nil {
+		return nil, fmt.Errorf("failed to parse contacts: %w", err)
+	}
+
+	return contacts, nil
+}
+
+// searchAdvanced handles complex multi-field searches
+func searchAdvanced(opts SearchOptions) ([]Contact, error) {
+	// Build filter conditions for JavaScript
+	var filters []string
+
+	if opts.Name != "" {
+		filters = append(filters, fmt.Sprintf(`(names[i] || '').toLowerCase().indexOf('%s') !== -1`, escapeJS(strings.ToLower(opts.Name))))
+	}
+	if opts.Organization != "" {
+		filters = append(filters, fmt.Sprintf(`(orgs[i] || '').toLowerCase().indexOf('%s') !== -1`, escapeJS(strings.ToLower(opts.Organization))))
+	}
+	if opts.Email != "" {
+		filters = append(filters, fmt.Sprintf(`emailStr.toLowerCase().indexOf('%s') !== -1`, escapeJS(strings.ToLower(opts.Email))))
+	}
+	if opts.Phone != "" {
+		filters = append(filters, fmt.Sprintf(`phoneStr.indexOf('%s') !== -1`, escapeJS(opts.Phone)))
+	}
+	if opts.Note != "" {
+		filters = append(filters, fmt.Sprintf(`(notes[i] || '').toLowerCase().indexOf('%s') !== -1`, escapeJS(strings.ToLower(opts.Note))))
+	}
+	if opts.Address != "" {
+		filters = append(filters, fmt.Sprintf(`addrStr.toLowerCase().indexOf('%s') !== -1`, escapeJS(strings.ToLower(opts.Address))))
+	}
+	if opts.Birthday != "" {
+		filters = append(filters, fmt.Sprintf(`birthdayMMDD === '%s'`, escapeJS(opts.Birthday)))
+	}
+	if opts.BirthdayMonth > 0 && opts.BirthdayMonth <= 12 {
+		filters = append(filters, fmt.Sprintf(`birthdayMonth === %d`, opts.BirthdayMonth))
+	}
+	if opts.Any != "" {
+		anyLower := escapeJS(strings.ToLower(opts.Any))
+		filters = append(filters, fmt.Sprintf(`(
+			(names[i] || '').toLowerCase().indexOf('%s') !== -1 ||
+			(orgs[i] || '').toLowerCase().indexOf('%s') !== -1 ||
+			(notes[i] || '').toLowerCase().indexOf('%s') !== -1 ||
+			emailStr.toLowerCase().indexOf('%s') !== -1 ||
+			phoneStr.indexOf('%s') !== -1 ||
+			addrStr.toLowerCase().indexOf('%s') !== -1
+		)`, anyLower, anyLower, anyLower, anyLower, anyLower, anyLower))
+	}
+
+	if len(filters) == 0 {
+		return []Contact{}, nil
+	}
+
+	filterCondition := strings.Join(filters, " && ")
 
 	script := fmt.Sprintf(`
 var Contacts = Application("Contacts");
-var allPeople = Contacts.people();
+var people = Contacts.people;
+
+// Batch fetch all scalar properties (fast)
+var ids = people.id();
+var names = people.name();
+var firstNames = people.firstName();
+var lastNames = people.lastName();
+var orgs = people.organization();
+var notes = people.note();
+var birthDates = people.birthDate();
+
 var results = [];
 
-for (var i = 0; i < allPeople.length; i++) {
-    var p = allPeople[i];
+for (var i = 0; i < ids.length; i++) {
+    // Compute birthday strings
+    var birthdayMMDD = '';
+    var birthdayMonth = 0;
+    var bd = birthDates[i];
+    if (bd) {
+        var month = bd.getMonth() + 1;
+        var day = bd.getDate();
+        birthdayMonth = month;
+        birthdayMMDD = ('0' + month).slice(-2) + '-' + ('0' + day).slice(-2);
+    }
 
-    // Pre-compute searchable strings
-    var emailsStr = '';
-    try {
-        var ems = p.emails();
-        for (var k = 0; k < ems.length; k++) {
-            emailsStr += (ems[k].value() || '') + ' ';
-        }
-    } catch(e) {}
+    // Get phone/email/address strings for filtering (only if needed)
+    var phoneStr = '';
+    var emailStr = '';
+    var addrStr = '';
+    var p = people[i];
 
-    var phonesStr = '';
     try {
         var phs = p.phones();
         for (var j = 0; j < phs.length; j++) {
-            phonesStr += (phs[j].value() || '').replace(/[^0-9+]/g, '') + ' ';
+            phoneStr += (phs[j].value() || '').replace(/[^0-9+]/g, '') + ' ';
         }
     } catch(e) {}
 
-    var addressStr = '';
+    try {
+        var ems = p.emails();
+        for (var k = 0; k < ems.length; k++) {
+            emailStr += (ems[k].value() || '') + ' ';
+        }
+    } catch(e) {}
+
     try {
         var addrs = p.addresses();
         for (var m = 0; m < addrs.length; m++) {
             var a = addrs[m];
-            addressStr += (a.street() || '') + ' ' + (a.city() || '') + ' ' + (a.state() || '') + ' ' + (a.zip() || '') + ' ' + (a.country() || '') + ' ';
-        }
-    } catch(e) {}
-
-    var birthdayMMDD = '';
-    var birthdayMonth = 0;
-    try {
-        var bd = p.birthDate();
-        if (bd) {
-            var month = bd.getMonth() + 1;
-            var day = bd.getDate();
-            birthdayMonth = month;
-            birthdayMMDD = ('0' + month).slice(-2) + '-' + ('0' + day).slice(-2);
+            addrStr += (a.street() || '') + ' ' + (a.city() || '') + ' ' + (a.state() || '') + ' ' + (a.zip() || '') + ' ' + (a.country() || '') + ' ';
         }
     } catch(e) {}
 
     if (%s) {
+        // Collect full data for matches
         var phones = [];
         try {
             var phs = p.phones();
@@ -292,21 +268,18 @@ for (var i = 0; i < allPeople.length; i++) {
         } catch(e) {}
 
         var birthday = '';
-        try {
-            var bd = p.birthDate();
-            if (bd) {
-                var month = ('0' + (bd.getMonth() + 1)).slice(-2);
-                var day = ('0' + bd.getDate()).slice(-2);
-                birthday = bd.getFullYear() + '-' + month + '-' + day;
-            }
-        } catch(e) {}
+        if (bd) {
+            var month = ('0' + (bd.getMonth() + 1)).slice(-2);
+            var day = ('0' + bd.getDate()).slice(-2);
+            birthday = bd.getFullYear() + '-' + month + '-' + day;
+        }
 
         results.push({
-            id: p.id(),
-            name: p.name() || '',
-            firstName: p.firstName() || '',
-            lastName: p.lastName() || '',
-            organization: p.organization() || '',
+            id: ids[i],
+            name: names[i] || '',
+            firstName: firstNames[i] || '',
+            lastName: lastNames[i] || '',
+            organization: orgs[i] || '',
             birthday: birthday,
             phones: phones,
             emails: emails
@@ -314,7 +287,7 @@ for (var i = 0; i < allPeople.length; i++) {
     }
 }
 JSON.stringify(results);
-`, matchCondition)
+`, filterCondition)
 
 	output, err := execJXA(script)
 	if err != nil {
@@ -335,29 +308,83 @@ JSON.stringify(results);
 
 // GetContact retrieves full details for a contact by name
 func GetContact(name string) (*Contact, error) {
-	escapedName := escapeJS(strings.ToLower(name))
-
 	script := fmt.Sprintf(`
 var Contacts = Application("Contacts");
 var searchName = '%s';
-var allPeople = Contacts.people();
-var result = null;
+var matches = Contacts.people.whose({name: {_contains: searchName}});
 
-for (var i = 0; i < allPeople.length; i++) {
-    var p = allPeople[i];
-    var pName = (p.name() || '').toLowerCase();
-    if (pName === searchName || pName.indexOf(searchName) !== -1) {
-        %s
-        result = contact;
-
-        // Prefer exact match
-        if (pName === searchName) {
+if (matches.length === 0) {
+    null;
+} else {
+    // Prefer exact match
+    var p = matches[0];
+    var searchLower = searchName.toLowerCase();
+    for (var i = 0; i < matches.length; i++) {
+        if ((matches[i].name() || '').toLowerCase() === searchLower) {
+            p = matches[i];
             break;
         }
     }
+
+    var phones = [];
+    try {
+        var phs = p.phones();
+        for (var j = 0; j < phs.length; j++) {
+            phones.push({label: phs[j].label() || '', value: phs[j].value() || ''});
+        }
+    } catch(e) {}
+
+    var emails = [];
+    try {
+        var ems = p.emails();
+        for (var k = 0; k < ems.length; k++) {
+            emails.push({label: ems[k].label() || '', value: ems[k].value() || ''});
+        }
+    } catch(e) {}
+
+    var addresses = [];
+    try {
+        var addrs = p.addresses();
+        for (var m = 0; m < addrs.length; m++) {
+            var a = addrs[m];
+            addresses.push({
+                label: a.label() || '',
+                street: a.street() || '',
+                city: a.city() || '',
+                state: a.state() || '',
+                zip: a.zip() || '',
+                country: a.country() || ''
+            });
+        }
+    } catch(e) {}
+
+    var birthday = '';
+    try {
+        var bd = p.birthDate();
+        if (bd) {
+            var month = ('0' + (bd.getMonth() + 1)).slice(-2);
+            var day = ('0' + bd.getDate()).slice(-2);
+            birthday = bd.getFullYear() + '-' + month + '-' + day;
+        }
+    } catch(e) {}
+
+    JSON.stringify({
+        id: p.id(),
+        name: p.name() || '',
+        firstName: p.firstName() || '',
+        lastName: p.lastName() || '',
+        nickname: p.nickname() || '',
+        organization: p.organization() || '',
+        jobTitle: p.jobTitle() || '',
+        department: p.department() || '',
+        birthday: birthday,
+        note: p.note() || '',
+        phones: phones,
+        emails: emails,
+        addresses: addresses
+    });
 }
-JSON.stringify(result);
-`, escapedName, contactExtractorJS(true))
+`, escapeJS(name))
 
 	output, err := execJXA(script)
 	if err != nil {
@@ -378,23 +405,74 @@ JSON.stringify(result);
 
 // GetContactByID retrieves full details for a contact by ID
 func GetContactByID(id string) (*Contact, error) {
-	escapedID := escapeJS(id)
-
 	script := fmt.Sprintf(`
 var Contacts = Application("Contacts");
-var allPeople = Contacts.people();
-var result = null;
+var matches = Contacts.people.whose({id: '%s'});
 
-for (var i = 0; i < allPeople.length; i++) {
-    var p = allPeople[i];
-    if (p.id() === '%s') {
-        %s
-        result = contact;
-        break;
-    }
+if (matches.length === 0) {
+    null;
+} else {
+    var p = matches[0];
+
+    var phones = [];
+    try {
+        var phs = p.phones();
+        for (var j = 0; j < phs.length; j++) {
+            phones.push({label: phs[j].label() || '', value: phs[j].value() || ''});
+        }
+    } catch(e) {}
+
+    var emails = [];
+    try {
+        var ems = p.emails();
+        for (var k = 0; k < ems.length; k++) {
+            emails.push({label: ems[k].label() || '', value: ems[k].value() || ''});
+        }
+    } catch(e) {}
+
+    var addresses = [];
+    try {
+        var addrs = p.addresses();
+        for (var m = 0; m < addrs.length; m++) {
+            var a = addrs[m];
+            addresses.push({
+                label: a.label() || '',
+                street: a.street() || '',
+                city: a.city() || '',
+                state: a.state() || '',
+                zip: a.zip() || '',
+                country: a.country() || ''
+            });
+        }
+    } catch(e) {}
+
+    var birthday = '';
+    try {
+        var bd = p.birthDate();
+        if (bd) {
+            var month = ('0' + (bd.getMonth() + 1)).slice(-2);
+            var day = ('0' + bd.getDate()).slice(-2);
+            birthday = bd.getFullYear() + '-' + month + '-' + day;
+        }
+    } catch(e) {}
+
+    JSON.stringify({
+        id: p.id(),
+        name: p.name() || '',
+        firstName: p.firstName() || '',
+        lastName: p.lastName() || '',
+        nickname: p.nickname() || '',
+        organization: p.organization() || '',
+        jobTitle: p.jobTitle() || '',
+        department: p.department() || '',
+        birthday: birthday,
+        note: p.note() || '',
+        phones: phones,
+        emails: emails,
+        addresses: addresses
+    });
 }
-JSON.stringify(result);
-`, escapedID, contactExtractorJS(true))
+`, escapeJS(id))
 
 	output, err := execJXA(script)
 	if err != nil {
@@ -415,13 +493,26 @@ JSON.stringify(result);
 
 // ListContacts returns all contacts
 func ListContacts(limit int) ([]Contact, error) {
-	script := `
-var Contacts = Application("Contacts");
-var allPeople = Contacts.people();
-var results = [];
+	limitClause := ""
+	if limit > 0 {
+		limitClause = fmt.Sprintf("if (results.length >= %d) break;", limit)
+	}
 
-for (var i = 0; i < allPeople.length; i++) {
-    var p = allPeople[i];
+	script := fmt.Sprintf(`
+var Contacts = Application("Contacts");
+var people = Contacts.people;
+
+// Batch fetch scalar properties
+var ids = people.id();
+var names = people.name();
+var firstNames = people.firstName();
+var lastNames = people.lastName();
+var orgs = people.organization();
+
+var results = [];
+for (var i = 0; i < ids.length; i++) {
+    %s
+    var p = people[i];
     var phones = [];
     try {
         var phs = p.phones();
@@ -439,17 +530,17 @@ for (var i = 0; i < allPeople.length; i++) {
     } catch(e) {}
 
     results.push({
-        id: p.id(),
-        name: p.name() || '',
-        firstName: p.firstName() || '',
-        lastName: p.lastName() || '',
-        organization: p.organization() || '',
+        id: ids[i],
+        name: names[i] || '',
+        firstName: firstNames[i] || '',
+        lastName: lastNames[i] || '',
+        organization: orgs[i] || '',
         phones: phones,
         emails: emails
     });
 }
 JSON.stringify(results);
-`
+`, limitClause)
 
 	output, err := execJXA(script)
 	if err != nil {
@@ -465,10 +556,6 @@ JSON.stringify(results);
 		return nil, fmt.Errorf("failed to parse contacts: %w", err)
 	}
 
-	if limit > 0 && len(contacts) > limit {
-		contacts = contacts[:limit]
-	}
-
 	return contacts, nil
 }
 
@@ -476,17 +563,17 @@ JSON.stringify(results);
 func ListGroups() ([]Group, error) {
 	script := `
 var Contacts = Application("Contacts");
-var groups = Contacts.groups();
+var groups = Contacts.groups;
+var names = groups.name();
 var results = [];
 
-for (var i = 0; i < groups.length; i++) {
-    var g = groups[i];
+for (var i = 0; i < names.length; i++) {
     var count = 0;
     try {
-        count = g.people().length;
+        count = groups[i].people().length;
     } catch(e) {}
     results.push({
-        name: g.name(),
+        name: names[i],
         count: count
     });
 }
@@ -512,16 +599,20 @@ JSON.stringify(results);
 
 // ListContactsInGroup returns contacts in a specific group
 func ListContactsInGroup(groupName string) ([]Contact, error) {
-	escapedGroup := escapeJS(groupName)
-
 	script := fmt.Sprintf(`
 var Contacts = Application("Contacts");
 var groups = Contacts.groups.whose({name: '%s'});
 var results = [];
 
 if (groups.length > 0) {
-    var people = groups[0].people();
-    for (var i = 0; i < people.length; i++) {
+    var people = groups[0].people;
+    var ids = people.id();
+    var names = people.name();
+    var firstNames = people.firstName();
+    var lastNames = people.lastName();
+    var orgs = people.organization();
+
+    for (var i = 0; i < ids.length; i++) {
         var p = people[i];
         var phones = [];
         try {
@@ -540,18 +631,18 @@ if (groups.length > 0) {
         } catch(e) {}
 
         results.push({
-            id: p.id(),
-            name: p.name() || '',
-            firstName: p.firstName() || '',
-            lastName: p.lastName() || '',
-            organization: p.organization() || '',
+            id: ids[i],
+            name: names[i] || '',
+            firstName: firstNames[i] || '',
+            lastName: lastNames[i] || '',
+            organization: orgs[i] || '',
             phones: phones,
             emails: emails
         });
     }
 }
 JSON.stringify(results);
-`, escapedGroup)
+`, escapeJS(groupName))
 
 	output, err := execJXA(script)
 	if err != nil {
@@ -572,26 +663,26 @@ JSON.stringify(results);
 
 // GetContactVCard exports a contact as vCard format by name
 func GetContactVCard(name string) (string, error) {
-	escapedName := escapeJS(strings.ToLower(name))
-
 	script := fmt.Sprintf(`
 var Contacts = Application("Contacts");
 var searchName = '%s';
-var allPeople = Contacts.people();
-var vcard = null;
+var matches = Contacts.people.whose({name: {_contains: searchName}});
 
-for (var i = 0; i < allPeople.length; i++) {
-    var p = allPeople[i];
-    var pName = (p.name() || '').toLowerCase();
-    if (pName === searchName || pName.indexOf(searchName) !== -1) {
-        vcard = p.vcard();
-        if (pName === searchName) {
+if (matches.length === 0) {
+    null;
+} else {
+    // Prefer exact match
+    var p = matches[0];
+    var searchLower = searchName.toLowerCase();
+    for (var i = 0; i < matches.length; i++) {
+        if ((matches[i].name() || '').toLowerCase() === searchLower) {
+            p = matches[i];
             break;
         }
     }
+    p.vcard();
 }
-vcard;
-`, escapedName)
+`, escapeJS(name))
 
 	output, err := execJXA(script)
 	if err != nil {
@@ -607,22 +698,16 @@ vcard;
 
 // GetContactVCardByID exports a contact as vCard format by ID
 func GetContactVCardByID(id string) (string, error) {
-	escapedID := escapeJS(id)
-
 	script := fmt.Sprintf(`
 var Contacts = Application("Contacts");
-var allPeople = Contacts.people();
-var vcard = null;
+var matches = Contacts.people.whose({id: '%s'});
 
-for (var i = 0; i < allPeople.length; i++) {
-    var p = allPeople[i];
-    if (p.id() === '%s') {
-        vcard = p.vcard();
-        break;
-    }
+if (matches.length === 0) {
+    null;
+} else {
+    matches[0].vcard();
 }
-vcard;
-`, escapedID)
+`, escapeJS(id))
 
 	output, err := execJXA(script)
 	if err != nil {
