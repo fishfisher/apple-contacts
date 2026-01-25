@@ -13,7 +13,6 @@ import (
 var (
 	searchLimit         int
 	searchJSON          bool
-	searchShowID        bool
 	searchEmail         string
 	searchPhone         string
 	searchOrg           string
@@ -41,8 +40,7 @@ Examples:
   apple-contacts search --note "VIP"              # Search in notes
   apple-contacts search --address "Oslo"          # Search in addresses
   apple-contacts search --any "fisher"            # Search all fields
-  apple-contacts search --org "Agens" --json      # JSON output
-  apple-contacts search fisher --show-id          # Show contact IDs`,
+  apple-contacts search --org "Agens" --json      # JSON output`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		opts := contacts.SearchOptions{
 			Email:         searchEmail,
@@ -90,37 +88,27 @@ Examples:
 			return nil
 		}
 
-		// Check for duplicate names to decide whether to show IDs
-		showID := searchShowID || contacts.HasDuplicateNames(results)
-
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		if showID {
-			fmt.Fprintln(w, "NAME\tORGANIZATION\tID")
-		} else {
-			fmt.Fprintln(w, "NAME\tORGANIZATION")
-		}
+		fmt.Fprintln(w, "NAME\tNICKNAME\tORGANIZATION\tID")
 
 		for _, c := range results {
+			nick := c.Nickname
+			if nick == "" {
+				nick = "-"
+			}
 			org := c.Organization
 			if org == "" {
 				org = "-"
 			}
-			if showID {
-				shortID := c.ID
-				if len(shortID) > 20 {
-					shortID = shortID[:17] + "..."
-				}
-				fmt.Fprintf(w, "%s\t%s\t%s\n", c.Name, org, shortID)
-			} else {
-				fmt.Fprintf(w, "%s\t%s\n", c.Name, org)
+			shortID := c.ID
+			if len(shortID) > 20 {
+				shortID = shortID[:17] + "..."
 			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", c.Name, nick, org, shortID)
 		}
 		w.Flush()
 
 		fmt.Printf("\nFound %d contact(s)\n", len(results))
-		if showID && !searchShowID {
-			fmt.Println("(IDs shown due to duplicate names - use 'show <name>' for details)")
-		}
 		return nil
 	},
 }
@@ -128,7 +116,6 @@ Examples:
 func init() {
 	searchCmd.Flags().IntVarP(&searchLimit, "limit", "l", 0, "Limit number of results")
 	searchCmd.Flags().BoolVarP(&searchJSON, "json", "j", false, "Output as JSON")
-	searchCmd.Flags().BoolVar(&searchShowID, "show-id", false, "Show contact IDs in output")
 	searchCmd.Flags().StringVar(&searchEmail, "email", "", "Search by email (contains)")
 	searchCmd.Flags().StringVar(&searchPhone, "phone", "", "Search by phone number (contains)")
 	searchCmd.Flags().StringVar(&searchOrg, "org", "", "Search by organization (contains)")

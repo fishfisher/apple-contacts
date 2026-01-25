@@ -103,30 +103,47 @@ func SearchContactsAdvanced(opts SearchOptions) ([]Contact, error) {
 }
 
 // searchByNameFast uses Contacts' native whose() for fast name search
-// Only fetches scalar properties (name, org) - no phones/emails for speed
+// Searches both name and nickname fields
+// Only fetches scalar properties (name, org, nickname) - no phones/emails for speed
 func searchByNameFast(term string) ([]Contact, error) {
 	script := fmt.Sprintf(`
 var Contacts = Application("Contacts");
 var searchTerm = '%s';
-var matches = Contacts.people.whose({name: {_contains: searchTerm}});
+
+// Search by name and nickname separately (JXA doesn't support OR)
+var byName = Contacts.people.whose({name: {_contains: searchTerm}});
+var byNick = Contacts.people.whose({nickname: {_contains: searchTerm}});
+
+// Collect results, avoiding duplicates
+var seen = {};
 var results = [];
 
-// Batch fetch all scalar properties at once (very fast)
-var ids = matches.id();
-var names = matches.name();
-var firstNames = matches.firstName();
-var lastNames = matches.lastName();
-var orgs = matches.organization();
+function addMatches(matches) {
+    var ids = matches.id();
+    var names = matches.name();
+    var firstNames = matches.firstName();
+    var lastNames = matches.lastName();
+    var nicknames = matches.nickname();
+    var orgs = matches.organization();
 
-for (var i = 0; i < ids.length; i++) {
-    results.push({
-        id: ids[i],
-        name: names[i] || '',
-        firstName: firstNames[i] || '',
-        lastName: lastNames[i] || '',
-        organization: orgs[i] || ''
-    });
+    for (var i = 0; i < ids.length; i++) {
+        if (!seen[ids[i]]) {
+            seen[ids[i]] = true;
+            results.push({
+                id: ids[i],
+                name: names[i] || '',
+                firstName: firstNames[i] || '',
+                lastName: lastNames[i] || '',
+                nickname: nicknames[i] || '',
+                organization: orgs[i] || ''
+            });
+        }
+    }
 }
+
+addMatches(byName);
+addMatches(byNick);
+
 JSON.stringify(results);
 `, escapeJS(term))
 
