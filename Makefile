@@ -1,14 +1,17 @@
-.PHONY: build clean test release
+.PHONY: build clean test release install
 
 build:
-	go build -o apple-contacts .
-
-clean:
-	rm -f apple-contacts
-	rm -rf dist/
-
-test:
-	go test ./...
+	swift build
 
 release:
-	goreleaser release --clean
+	swift build -c release
+
+clean:
+	rm -rf .build/
+	rm -rf dist/
+
+install: release
+	cp .build/release/apple-contacts /usr/local/bin/
+
+test:
+	swift test

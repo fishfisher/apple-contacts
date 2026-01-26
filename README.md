@@ -1,30 +1,27 @@
 # apple-contacts
 
-A command-line interface for Apple Contacts that uses JavaScript for Automation (JXA) for fast, read-only access to your contacts.
+A fast command-line interface for Apple Contacts that uses Apple's native Contacts Framework for direct, read-only access to your contacts.
 
 ## Features
 
-- **Fast search**: Search contacts by name, email, phone, organization, and more
+- **Fast search**: Native Contacts Framework provides fast lookups using built-in predicates
 - **Multiple search criteria**: Combine filters with AND logic
 - **Birthday search**: Find contacts by birthday date or month
 - **Full-text search**: Search across all fields at once
-- **Duplicate handling**: Automatic ID display when contacts share names
+- **Contact IDs**: Every result includes the contact ID for unambiguous lookups
 - **vCard export**: Export contacts in standard vCard format
 - **Group support**: List groups and filter contacts by group
 - **JSON output**: Machine-readable output for scripting
 
 ## Installation
 
-### Homebrew
+### From Source (Swift)
 
 ```bash
-brew install fishfisher/tap/apple-contacts
-```
-
-### From Source
-
-```bash
-go install github.com/fishfisher/apple-contacts@latest
+git clone https://github.com/fishfisher/apple-contacts.git
+cd apple-contacts
+swift build -c release
+cp .build/release/apple-contacts /usr/local/bin/
 ```
 
 ### Binary Download
@@ -65,12 +62,6 @@ apple-contacts search --birthday "01-25"
 
 # All January birthdays
 apple-contacts search --birthday-month 1
-```
-
-### Search in notes
-
-```bash
-apple-contacts search --note "VIP"
 ```
 
 ### Search in addresses
@@ -163,45 +154,34 @@ apple-contacts groups --json
 | `--email` | Search by email address (contains) |
 | `--phone` | Search by phone number (contains) |
 | `--org` | Search by organization (contains) |
-| `--note` | Search in notes (contains) |
 | `--address` | Search in addresses (contains) |
 | `--birthday` | Search by birthday (MM-DD format) |
 | `--birthday-month` | Search by birthday month (1-12) |
 | `--any` | Search across all fields |
-| `--show-id` | Force showing contact IDs |
 | `--limit` | Limit number of results |
 | `--json` | Output as JSON |
 
-### Handling Duplicate Names
-
-When search results contain contacts with the same name, IDs are automatically displayed:
-
-```
-$ apple-contacts search "John Smith"
-NAME        PHONE           EMAIL              ID
-John Smith  +1 555-1234     john@work.com      ABC123-DEF456:AB...
-John Smith  +1 555-5678     johnsmith@home.com DEF789-GHI012:AB...
-
-Found 2 contact(s)
-(IDs shown due to duplicate names - use 'show --id <ID>' for specific contact)
-```
-
-Use the ID with `show --id` or `export --id` to target a specific contact.
-
 ## How It Works
 
-`apple-contacts` uses JavaScript for Automation (JXA) via `osascript` to query Apple Contacts. This provides:
+`apple-contacts` uses Apple's native Contacts Framework (`CNContactStore`) for fast, direct access to contacts:
 
+- **Native API**: Uses the same framework as the Contacts app
+- **Fast predicates**: Name and email searches use built-in database predicates
 - **Read-only access**: Safe, non-destructive operations
-- **No database access**: Works through the official Contacts API
 - **Full sync support**: Sees all contacts including iCloud-synced ones
-- **Rich data access**: Phones, emails, addresses, birthdays, notes, and more
+- **Rich data access**: Phones, emails, addresses, birthdays, social profiles, and more
+
+## Permissions
+
+On first run, macOS will prompt you to grant Contacts access. You can also grant access manually in:
+
+**System Settings > Privacy & Security > Contacts**
 
 ## Limitations
 
-- **macOS only**: Uses Apple's JXA which is macOS-specific
+- **macOS only**: Uses Apple's Contacts Framework which is macOS-specific
 - **Read-only**: Cannot create, edit, or delete contacts (use Contacts.app for that)
-- **Performance**: Large contact lists may take a moment to search (queries run through AppleScript)
+- **Notes field**: Not accessible from CLI apps without special Apple entitlements
 
 ## Development
 
@@ -211,11 +191,19 @@ git clone https://github.com/fishfisher/apple-contacts.git
 cd apple-contacts
 
 # Build
-make build
+swift build
 
 # Run
-./apple-contacts --help
+.build/debug/apple-contacts --help
+
+# Release build
+swift build -c release
 ```
+
+## Requirements
+
+- macOS 14.0 or later
+- Swift 6.0 or later
 
 ## License
 
