@@ -143,19 +143,16 @@ struct Search: ParsableCommand {
         // Calculate column widths
         let nameWidth = max(4, contacts.map { $0.fullName.count }.max() ?? 20)
         let nickWidth = max(8, contacts.map { $0.nickname.count }.max() ?? 10)
-        let orgWidth = max(12, contacts.map { $0.organizationName.count }.max() ?? 15)
 
         // Header
-        print("\("NAME".padding(toLength: nameWidth, withPad: " ", startingAt: 0))  \("NICKNAME".padding(toLength: nickWidth, withPad: " ", startingAt: 0))  \("ORGANIZATION".padding(toLength: orgWidth, withPad: " ", startingAt: 0))  ID")
+        print("\("NAME".padding(toLength: nameWidth, withPad: " ", startingAt: 0))  \("NICKNAME".padding(toLength: nickWidth, withPad: " ", startingAt: 0))  ID")
 
         // Rows
         for contact in contacts {
             let name = contact.fullName.padding(toLength: nameWidth, withPad: " ", startingAt: 0)
             let nick = (contact.nickname.isEmpty ? "-" : contact.nickname).padding(toLength: nickWidth, withPad: " ", startingAt: 0)
-            let org = (contact.organizationName.isEmpty ? "-" : contact.organizationName).padding(toLength: orgWidth, withPad: " ", startingAt: 0)
-            let shortId = String(contact.identifier.prefix(20)) + "..."
 
-            print("\(name)  \(nick)  \(org)  \(shortId)")
+            print("\(name)  \(nick)  \(contact.identifier)")
         }
 
         print("\nFound \(contacts.count) contact(s)")

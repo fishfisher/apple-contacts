@@ -74,9 +74,8 @@ struct List: ParsableCommand {
             let name = String(contact.fullName.prefix(nameWidth)).padding(toLength: nameWidth, withPad: " ", startingAt: 0)
             let org = (contact.organizationName.isEmpty ? "-" : String(contact.organizationName.prefix(orgWidth)))
                 .padding(toLength: orgWidth, withPad: " ", startingAt: 0)
-            let shortId = String(contact.identifier.prefix(20)) + "..."
 
-            print("\(name)  \(org)  \(shortId)")
+            print("\(name)  \(org)  \(contact.identifier)")
         }
 
         print("\nTotal: \(contacts.count) contact(s)")
