@@ -13,6 +13,7 @@ struct AppleContacts: ParsableCommand {
             List.self,
             Groups.self,
             Export.self,
+            Permissions.self,
         ],
         defaultSubcommand: nil
     )
