@@ -52,12 +52,20 @@ struct InstallSkill: ParsableCommand {
         }
 
         // Create directory and write file
-        try FileManager.default.createDirectory(
-            atPath: destDir,
-            withIntermediateDirectories: true,
-            attributes: nil
-        )
-        try skillContent.write(toFile: destFile, atomically: true, encoding: .utf8)
+        do {
+            try FileManager.default.createDirectory(
+                atPath: destDir,
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
+        } catch {
+            throw ValidationError("creating directory: mkdir \(destDir): \(error.localizedDescription)")
+        }
+        do {
+            try skillContent.write(toFile: destFile, atomically: true, encoding: .utf8)
+        } catch {
+            throw ValidationError("writing SKILL.md: \(error.localizedDescription)")
+        }
 
         print("\u{001B}[32m✓ Installed 1 file(s) to \(destDir)\u{001B}[0m")
     }
