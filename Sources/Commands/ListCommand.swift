@@ -15,8 +15,11 @@ struct List: ParsableCommand {
             """
     )
 
-    @Option(name: .long, help: "Filter by group name")
+    @Option(name: .long, help: "Filter by group name (case-insensitive)")
     var group: String?
+
+    @Option(name: .long, help: "Filter by group ID (from `groups --json`)")
+    var groupId: String?
 
     @Option(name: .shortAndLong, help: "Limit number of results")
     var limit: Int?
@@ -25,32 +28,23 @@ struct List: ParsableCommand {
     var json = false
 
     func run() throws {
+        if let limit, limit < 1 { throw ValidationError("--limit must be at least 1") }
+        try ContactsService.requireAccess()
         let service = ContactsService()
-
-        // Check access
-        let status = CNContactStore.authorizationStatus(for: .contacts)
-        if status == .denied || status == .restricted {
-            throw ContactsError.accessDenied
-        }
 
         var contacts: [CNContact]
 
-        if let groupName = group {
-            guard let group = try service.getGroup(name: groupName) else {
-                throw ContactsError.groupNotFound
+        if group != nil || groupId != nil {
+            contacts = try service.listContactsInGroup(service.getGroup(name: group, id: groupId))
+            if let limit, contacts.count > limit {
+                contacts = Array(contacts.prefix(limit))
             }
-            contacts = try service.listContactsInGroup(group)
         } else {
             contacts = try service.listContacts(limit: limit)
         }
 
-        // Apply limit if group was specified (listContacts already handles limit)
-        if group != nil, let limit = limit, contacts.count > limit {
-            contacts = Array(contacts.prefix(limit))
-        }
-
         if json {
-            printJSON(contacts)
+            JSON.print(contacts.map(JSON.summary))
         } else {
             printTable(contacts)
         }
@@ -79,24 +73,5 @@ struct List: ParsableCommand {
         }
 
         print("\nTotal: \(contacts.count) contact(s)")
-    }
-
-    private func printJSON(_ contacts: [CNContact]) {
-        let data = contacts.map { contact -> [String: Any] in
-            [
-                "id": contact.identifier,
-                "name": contact.fullName,
-                "firstName": contact.givenName,
-                "lastName": contact.familyName,
-                "nickname": contact.nickname,
-                "organization": contact.organizationName,
-            ]
-        }
-
-        if let jsonData = try? JSONSerialization.data(withJSONObject: data, options: .prettyPrinted),
-           let jsonString = String(data: jsonData, encoding: .utf8)
-        {
-            print(jsonString)
-        }
     }
 }

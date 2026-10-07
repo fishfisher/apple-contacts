@@ -37,7 +37,14 @@ struct Permissions: ParsableCommand {
         switch status {
         case .notDetermined:
             print("\nRequesting access...")
-            requestAccessSync()
+            if ContactsService.requestAccess(timeout: 60) {
+                print("Access granted!")
+            } else {
+                print("Access not granted (refused, or no prompt could be shown within 60 s).")
+                print("\nTo grant access, go to:")
+                print("  System Settings > Privacy & Security > Contacts")
+                throw ExitCode(ContactsService.accessDeniedExitCode)
+            }
 
         case .authorized:
             print("\nContacts access is granted. No action needed.")
@@ -45,11 +52,11 @@ struct Permissions: ParsableCommand {
         case .denied:
             print("\nAccess was denied. To reset and request again:")
             printResetInstructions()
-            throw ExitCode.failure
+            throw ExitCode(ContactsService.accessDeniedExitCode)
 
         case .restricted:
             print("\nAccess is restricted by system policy (parental controls, MDM, etc.)")
-            throw ExitCode.failure
+            throw ExitCode(ContactsService.accessDeniedExitCode)
 
         @unknown default:
             print("\nUnknown authorization status")
@@ -64,32 +71,6 @@ struct Permissions: ParsableCommand {
         case .denied: return "Denied"
         case .restricted: return "Restricted"
         @unknown default: return "Unknown"
-        }
-    }
-
-    private func requestAccessSync() {
-        let store = CNContactStore()
-        let semaphore = DispatchSemaphore(value: 0)
-        var granted = false
-        var accessError: Error?
-
-        store.requestAccess(for: .contacts) { success, error in
-            granted = success
-            accessError = error
-            semaphore.signal()
-        }
-
-        semaphore.wait()
-
-        if granted {
-            print("Access granted!")
-        } else if let error = accessError {
-            print("Access request failed: \(error.localizedDescription)")
-        } else {
-            print("Access denied by user.")
-            print("\nTo grant access, go to:")
-            print("  System Settings > Privacy & Security > Contacts")
-            print("  and enable access for your terminal or Node.js application.")
         }
     }
 

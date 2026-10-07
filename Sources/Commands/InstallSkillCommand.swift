@@ -46,7 +46,7 @@ struct InstallSkill: ParsableCommand {
             guard let line = readLine()?.trimmingCharacters(in: .whitespaces),
                   let choice = Int(line), choice >= 1, choice <= Self.knownSkillLocations.count + 1 else {
                 print("Aborted.")
-                return
+                throw ExitCode.failure
             }
 
             if choice <= Self.knownSkillLocations.count {
@@ -85,7 +85,7 @@ struct InstallSkill: ParsableCommand {
             guard let answer = readLine()?.trimmingCharacters(in: .whitespaces).lowercased(),
                   answer == "y" else {
                 print("Aborted.")
-                return
+                throw ExitCode.failure
             }
         }
 

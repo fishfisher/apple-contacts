@@ -1,311 +1,70 @@
 ---
 name: apple-contacts
 description: Search and view Apple Contacts from the command line using apple-contacts CLI. Use when asked to search, list, show, or export contacts, find birthdays, browse contact groups, or look up people by name, email, phone, organization, or address. Read-only access using Apple's native Contacts Framework for fast, reliable lookups.
-metadata: {"clawdbot":{"emoji":"📇","requires":{"bins":["apple-contacts"]},"install":[{"id":"source","kind":"source","repo":"https://github.com/fishfisher/apple-contacts","bins":["apple-contacts"],"label":"Install apple-contacts (from source)"}]}}
+metadata: {"clawdbot":{"emoji":"📇","requires":{"bins":["apple-contacts"]},"install":[{"id":"brew","kind":"brew","formula":"fishfisher/tap/apple-contacts","bins":["apple-contacts"],"label":"Install apple-contacts (Homebrew)"}]}}
 ---
 
 # Apple Contacts
 
-Search and view your Apple Contacts from the command line using the `apple-contacts` CLI. This skill provides fast, read-only access to your contacts using Apple's native Contacts Framework.
+Read-only access to Apple Contacts through the native Contacts framework.
 
-**Key Features:**
-- **Native framework**: Uses Apple's Contacts Framework for direct, fast access
-- **Multi-criteria search**: Filter by name, email, phone, organization, address, birthday
-- **vCard export**: Export contacts in standard vCard format
-- **Group management**: Browse and search contact groups
-- **JSON output**: Machine-readable output for automation
+## Install
 
-## Setup & Configuration
-
-### Installation
-
-From source:
 ```bash
-git clone https://github.com/fishfisher/apple-contacts.git
-cd apple-contacts && swift build -c release
-cp .build/release/apple-contacts /usr/local/bin/
+brew install fishfisher/tap/apple-contacts
+apple-contacts permissions   # asks for Contacts access once
 ```
 
-Or download a binary from the [releases page](https://github.com/fishfisher/apple-contacts/releases).
+Requires macOS 14+.
 
-Verify installation:
-```bash
-apple-contacts --help
-```
+## Workflow for agents
 
-**First Run:** macOS will prompt for Contacts access permission on first use. Grant access to enable the CLI.
+1. `apple-contacts search <term> --json` — rows include `id`, `name`, `organization`, `phones`, `emails`, `birthday`, so you rarely need `show`.
+2. When you need everything (addresses, relations, URLs, dates): `apple-contacts show --id <id> --json`.
+3. `show "<name>"` works when the name identifies one person. If several match, it fails (exit 1) and lists each candidate's `--id` — pick one, don't guess.
 
-### Requirements
-
-- macOS 14.0 or later
-- Swift 6.0 or later (for building from source)
-- Contacts app permission
-
-## Quick Start
+## Search
 
 ```bash
-# List all contacts
-apple-contacts list
-
-# Search for a contact by name
-apple-contacts search "John"
-
-# Show full contact details
-apple-contacts show "John Smith"
-
-# Search by email
-apple-contacts search --email "john@example.com"
-
-# Search by phone number
-apple-contacts search --phone "555-1234"
-
-# Find contacts with birthdays this month
-apple-contacts search --birthday-month 1
-
-# List all contact groups
-apple-contacts groups
-
-# Export contact to vCard
-apple-contacts export "John Smith"
-```
-
-## Core Capabilities
-
-### 1. List All Contacts
-
-Display all contacts in your address book:
-
-```bash
-# List all contacts
-apple-contacts list
-
-# Limit results
-apple-contacts list --limit 20
-
-# Output as JSON
-apple-contacts list --json
-```
-
-### 2. Search Contacts
-
-Find contacts using various criteria. Multiple filters use AND logic.
-
-```bash
-# Search by name (partial match)
-apple-contacts search "John"
-apple-contacts search "Smith"
-
-# Search by email
-apple-contacts search --email "gmail.com"
-apple-contacts search --email "john@example.com"
-
-# Search by phone number
-apple-contacts search --phone "555"
-apple-contacts search --phone "+1-555-123-4567"
-
-# Search by organization
+apple-contacts search "fisher"                    # name or nickname
+apple-contacts search --email "@company.com"
+apple-contacts search --phone "900 00 000"        # also +4790000000, 004790000000
 apple-contacts search --org "Acme"
-apple-contacts search --org "Apple"
-
-# Search by address
-apple-contacts search --address "San Francisco"
-apple-contacts search --address "CA"
-
-# Search any field
-apple-contacts search --any "keyword"
-
-# Combine filters (AND logic)
-apple-contacts search "John" --org "Apple"
-apple-contacts search --email "gmail.com" --address "New York"
-
-# Limit results
-apple-contacts search "John" --limit 5
-
-# Output as JSON
-apple-contacts search "John" --json
-```
-
-### 3. Show Contact Details
-
-Display complete information for a specific contact:
-
-```bash
-# Show contact by name
-apple-contacts show "John Smith"
-
-# Output as JSON
-apple-contacts show "John Smith" --json
-```
-
-Shows all available fields including:
-- Full name and nickname
-- Phone numbers (with labels)
-- Email addresses (with labels)
-- Physical addresses
-- Organization and job title
-- Birthday
-- Social profiles
-- URLs
-
-### 4. Birthday Search
-
-Find contacts with birthdays:
-
-```bash
-# Find contacts with birthday on specific date (MM-DD format)
-apple-contacts search --birthday 01-15
-
-# Find contacts with birthdays this month
-apple-contacts search --birthday-month 1
-
-# Find December birthdays
+apple-contacts search --address "Oslo"
+apple-contacts search --any "keyword"             # name, org, email, address, phone
+apple-contacts search --birthday 01-25            # also 1-25, 25.01, YYYY-MM-DD
 apple-contacts search --birthday-month 12
-
-# Combine with other filters
-apple-contacts search --birthday-month 6 --org "Family"
+apple-contacts search "erik" --org "Agens" --limit 5 --json
 ```
 
-### 5. Contact Groups
+- Text matches anywhere and ignores case and accents; `o`/`ae`/`a`/`aa` also match `ø`/`æ`/`å`.
+- Phone numbers match regardless of spaces and `+47`/`0047`.
+- All given criteria must match (AND), `--any` included.
+- Results come in Contacts' sort order. An invalid `--birthday` or `--limit` is an error, not "everything".
 
-Browse and work with contact groups:
+## Other commands
 
 ```bash
-# List all groups
-apple-contacts groups
-
-# Output as JSON
-apple-contacts groups --json
+apple-contacts list [--limit N] [--group "name" | --group-id <id>] [--json]   # group name is case-insensitive
+apple-contacts show "<name>" | --id <id> [--json]   # all fields; addresses also split into street/postalCode/city/country
+apple-contacts groups [--json]
+apple-contacts export "<name>" | --id <id> [--output file.vcf]   # vCard
+apple-contacts permissions [--reset]
+apple-contacts install-skill [--path <dir>] [--force]
 ```
 
-### 6. Export to vCard
+Birthdays are `YYYY-MM-DD`, or `--MM-DD` when the year is unknown.
 
-Export contacts in vCard format for sharing or backup:
+## Exit codes
 
-```bash
-# Export single contact
-apple-contacts export "John Smith"
+- 0 ok · 1 not found / ambiguous name / other error · 64 invalid arguments · 77 no Contacts access
 
-# Save to file
-apple-contacts export "John Smith" > john-smith.vcf
-```
+## Permissions from agents
 
-## Output Formats
-
-### Default (Human-Readable)
-
-```
-John Smith
-  Email: john@example.com (work)
-  Phone: +1-555-123-4567 (mobile)
-  Organization: Acme Corp
-```
-
-### JSON Output
-
-Use `--json` flag for machine-readable output:
-
-```bash
-apple-contacts search "John" --json
-apple-contacts show "John Smith" --json
-apple-contacts list --json
-apple-contacts groups --json
-```
-
-JSON output is useful for:
-- Scripting and automation
-- Integration with other tools
-- Data processing pipelines
-
-## Common Workflows
-
-### Find a Contact's Phone Number
-
-```bash
-# Quick search
-apple-contacts search "Jane"
-
-# Or show full details
-apple-contacts show "Jane Doe"
-```
-
-### Find Work Colleagues
-
-```bash
-# Search by company
-apple-contacts search --org "MyCompany"
-
-# Search by work email domain
-apple-contacts search --email "@mycompany.com"
-```
-
-### Birthday Reminders
-
-```bash
-# Find this month's birthdays
-apple-contacts search --birthday-month $(date +%m)
-
-# Find today's birthdays
-apple-contacts search --birthday $(date +%m-%d)
-```
-
-### Lookup by Email
-
-```bash
-# Find who owns an email address
-apple-contacts search --email "unknown@example.com"
-```
-
-### Find Local Contacts
-
-```bash
-# Search by city
-apple-contacts search --address "San Francisco"
-
-# Search by state
-apple-contacts search --address "California"
-```
-
-### Export for Sharing
-
-```bash
-# Export contact to vCard file
-apple-contacts export "John Smith" > ~/Desktop/john.vcf
-
-# Share multiple contacts
-for name in "John Smith" "Jane Doe"; do
-  apple-contacts export "$name" >> ~/Desktop/contacts.vcf
-done
-```
+- On 77, run `apple-contacts permissions`. It shows the macOS prompt when access was never asked for. If access was denied, the user must enable it in System Settings > Privacy & Security > Contacts.
+- Agent sandboxes (Codex/ChatGPT) may not get the prompt at all. If an `apple-contacts-codex` wrapper is on this Mac, use it with the same arguments. It launches a signed app copy that holds its own Contacts permission. Never reset permissions for other apps or edit TCC databases.
 
 ## Limitations
 
-- **Read-only**: Cannot create, edit, or delete contacts (use Contacts.app for modifications)
-- **macOS only**: Requires macOS 14.0 or later
-- **Notes field**: Accessing contact notes requires special Apple entitlements (not available)
-- **Permission required**: Must grant Contacts access on first run
-
-## Troubleshooting
-
-### "Contacts access denied" error
-- Go to System Settings > Privacy & Security > Contacts
-- Enable access for Terminal (or your terminal app)
-- Restart the terminal
-
-### Contact not found
-- Try a partial name: `apple-contacts search "Jo"` instead of "John Smith"
-- Check spelling
-- Use `apple-contacts list` to see all contacts
-
-### Permission prompt not appearing
-- Run any command to trigger the prompt: `apple-contacts list`
-- If still no prompt, manually enable in System Settings > Privacy & Security > Contacts
-
-### Empty results
-- Ensure Contacts.app has contacts (check the app directly)
-- Verify permissions are granted
-- Try broader search terms
-
-## Resources
-
-- [apple-contacts GitHub](https://github.com/fishfisher/apple-contacts)
-- [Apple Contacts Framework Documentation](https://developer.apple.com/documentation/contacts)
+- Read-only: no creating, editing or deleting contacts.
+- Contact notes need an Apple entitlement and aren't available.

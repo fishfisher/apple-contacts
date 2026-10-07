@@ -15,6 +15,12 @@ A fast command-line interface for Apple Contacts that uses Apple's native Contac
 
 ## Installation
 
+### Homebrew
+
+```bash
+brew install fishfisher/tap/apple-contacts
+```
+
 ### From Source (Swift)
 
 ```bash
@@ -128,7 +134,7 @@ apple-contacts export --id "ABC123-DEF456:ABPerson"
 
 ### JSON output
 
-All commands support `--json` for machine-readable output:
+`search`, `list`, `show` and `groups` support `--json` (stable key order):
 
 ```bash
 apple-contacts search fisher --json

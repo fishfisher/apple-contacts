@@ -7,7 +7,8 @@ struct Show: ParsableCommand {
         abstract: "Show full details for a contact",
         discussion: """
             Display all available information for a specific contact.
-            You can identify the contact by name or ID.
+            You can identify the contact by name or ID. A name that matches
+            several contacts is an error listing their IDs.
 
             Examples:
               apple-contacts show "John Doe"
@@ -25,27 +26,11 @@ struct Show: ParsableCommand {
     var json = false
 
     func run() throws {
-        let service = ContactsService()
-
-        // Check access
-        let status = CNContactStore.authorizationStatus(for: .contacts)
-        if status == .denied || status == .restricted {
-            throw ContactsError.accessDenied
-        }
-
-        var contact: CNContact?
-
-        if let id = id {
-            contact = try service.getContact(id: id)
-        } else if let name = name {
-            contact = try service.getContact(name: name)
-        } else {
+        guard id != nil || name != nil else {
             throw ValidationError("Please provide a contact name or --id")
         }
-
-        guard let contact else {
-            throw ContactsError.contactNotFound
-        }
+        try ContactsService.requireAccess()
+        let contact = try resolveContact(name: name, id: id)
 
         if json {
             printJSON(contact)
@@ -121,7 +106,7 @@ struct Show: ParsableCommand {
             print("\nSOCIAL:")
             for profile in contact.socialProfiles {
                 let service = profile.value.service
-                let username = profile.value.username
+                let username = profile.value.username.isEmpty ? profile.value.urlString : profile.value.username
                 print("  \(service.padding(toLength: 12, withPad: " ", startingAt: 0)) \(username)")
             }
         }
@@ -156,6 +141,16 @@ struct Show: ParsableCommand {
             data["birthday"] = birthday
         }
 
+        data["dates"] = contact.dates.compactMap { date -> [String: String]? in
+            let c = date.value as DateComponents
+            guard let month = c.month, let day = c.day else { return nil }
+            let year = c.year.map { String(format: "%04d", $0) } ?? "-"
+            return [
+                "label": CNLabeledValue<NSDateComponents>.localizedString(forLabel: date.label ?? "other"),
+                "value": "\(year)-\(String(format: "%02d", month))-\(String(format: "%02d", day))",
+            ]
+        }
+
         data["phones"] = contact.phoneNumbers.map { phone -> [String: String] in
             [
                 "label": CNLabeledValue<CNPhoneNumber>.localizedString(forLabel: phone.label ?? "other"),
@@ -171,9 +166,14 @@ struct Show: ParsableCommand {
         }
 
         data["addresses"] = contact.postalAddresses.map { address -> [String: String] in
-            [
+            let a = address.value
+            return [
                 "label": CNLabeledValue<CNPostalAddress>.localizedString(forLabel: address.label ?? "other"),
-                "value": CNPostalAddressFormatter.string(from: address.value, style: .mailingAddress),
+                "value": CNPostalAddressFormatter.string(from: a, style: .mailingAddress),
+                "street": a.street,
+                "postalCode": a.postalCode,
+                "city": a.city,
+                "country": a.country,
             ]
         }
 
@@ -188,6 +188,7 @@ struct Show: ParsableCommand {
             [
                 "service": profile.value.service,
                 "username": profile.value.username,
+                "url": profile.value.urlString,
             ]
         }
 
@@ -198,10 +199,16 @@ struct Show: ParsableCommand {
             ]
         }
 
-        if let jsonData = try? JSONSerialization.data(withJSONObject: data, options: [.prettyPrinted, .sortedKeys]),
-           let jsonString = String(data: jsonData, encoding: .utf8)
-        {
-            print(jsonString)
-        }
+        JSON.print(data)
     }
+}
+
+/// Looks a contact up by --id, or by a name that must identify exactly one contact.
+func resolveContact(name: String?, id: String?) throws -> CNContact {
+    let service = ContactsService()
+    if let id {
+        guard let contact = try service.getContact(id: id) else { throw ContactsError.contactNotFound }
+        return contact
+    }
+    return try service.getContact(name: name ?? "")
 }

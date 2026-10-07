@@ -1,3 +1,4 @@
+import ArgumentParser
 import Contacts
 import Foundation
 
@@ -11,9 +12,21 @@ final class ContactsService {
             CNContactIdentifierKey as CNKeyDescriptor,
             CNContactGivenNameKey as CNKeyDescriptor,
             CNContactFamilyNameKey as CNKeyDescriptor,
+            CNContactMiddleNameKey as CNKeyDescriptor,
             CNContactNicknameKey as CNKeyDescriptor,
             CNContactOrganizationNameKey as CNKeyDescriptor,
             CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
+        ]
+    }
+
+    /// Keys for search and list: enough to match every filter and to return
+    /// phones and emails without a `show` per contact.
+    static var summaryKeys: [CNKeyDescriptor] {
+        basicKeys + [
+            CNContactPhoneNumbersKey as CNKeyDescriptor,
+            CNContactEmailAddressesKey as CNKeyDescriptor,
+            CNContactPostalAddressesKey as CNKeyDescriptor,
+            CNContactBirthdayKey as CNKeyDescriptor,
         ]
     }
 
@@ -30,6 +43,7 @@ final class ContactsService {
             CNContactDepartmentNameKey as CNKeyDescriptor,
             CNContactJobTitleKey as CNKeyDescriptor,
             CNContactBirthdayKey as CNKeyDescriptor,
+            CNContactDatesKey as CNKeyDescriptor,
             CNContactPhoneNumbersKey as CNKeyDescriptor,
             CNContactEmailAddressesKey as CNKeyDescriptor,
             CNContactPostalAddressesKey as CNKeyDescriptor,
@@ -49,261 +63,53 @@ final class ContactsService {
 
     init() {}
 
-    /// Request access to contacts
-    func requestAccess() async throws -> Bool {
-        try await store.requestAccess(for: .contacts)
-    }
+    // MARK: - Access
 
-    /// Check authorization status
-    var isAuthorized: Bool {
-        CNContactStore.authorizationStatus(for: .contacts) == .authorized
-    }
+    /// Exit code for missing Contacts access, so wrappers can tell it apart
+    /// from "not found" (1) and usage errors (64).
+    static let accessDeniedExitCode: Int32 = 77
 
-    /// Ensure we have access, throw if not
-    func ensureAccess() throws {
-        let status = CNContactStore.authorizationStatus(for: .contacts)
-        switch status {
+    /// Ensures Contacts access, asking once when it was never requested.
+    /// Every command calls this first.
+    static func requireAccess() throws {
+        switch CNContactStore.authorizationStatus(for: .contacts) {
         case .authorized:
             return
         case .notDetermined:
-            // For CLI, we can't easily request access synchronously
-            // User needs to grant permission via System Settings
-            throw ContactsError.accessDenied
-        case .denied, .restricted:
-            throw ContactsError.accessDenied
-        @unknown default:
-            throw ContactsError.accessDenied
+            if requestAccess(timeout: 60) { return }
+        default:
+            break
         }
+        FileHandle.standardError.write(Data("Error: \(ContactsError.accessDenied.description)\n".utf8))
+        throw ExitCode(accessDeniedExitCode)
     }
 
-    // MARK: - Search Operations
+    /// Shows the system prompt and waits for the answer (or the timeout,
+    /// when no prompt can be shown, e.g. from a headless session).
+    static func requestAccess(timeout: TimeInterval) -> Bool {
+        let semaphore = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var granted = false
+        CNContactStore().requestAccess(for: .contacts) { success, _ in
+            granted = success
+            semaphore.signal()
+        }
+        if semaphore.wait(timeout: .now() + timeout) == .timedOut { return false }
+        return granted
+    }
 
-    /// Search contacts by name or nickname (fast - uses predicate for name)
-    func searchByName(_ query: String) throws -> [CNContact] {
-        let predicate = CNContact.predicateForContacts(matchingName: query)
-        let byName = try store.unifiedContacts(matching: predicate, keysToFetch: Self.basicKeys)
+    // MARK: - Search
 
-        // Also search by nickname (no built-in predicate, so fetch and filter)
-        let nicknameMatches = try searchByNickname(query)
-
-        // Merge and deduplicate
-        var seen = Set<String>()
+    /// All contacts matching every given criterion (AND), in the user's sort order.
+    /// One pass over the address book, whatever the number of filters.
+    func search(_ criteria: SearchCriteria) throws -> [CNContact] {
         var results: [CNContact] = []
-
-        for contact in byName {
-            if !seen.contains(contact.identifier) {
-                seen.insert(contact.identifier)
+        let request = CNContactFetchRequest(keysToFetch: Self.summaryKeys)
+        request.sortOrder = .userDefault
+        try store.enumerateContacts(with: request) { contact, _ in
+            if criteria.matches(contact) {
                 results.append(contact)
             }
         }
-
-        for contact in nicknameMatches {
-            if !seen.contains(contact.identifier) {
-                seen.insert(contact.identifier)
-                results.append(contact)
-            }
-        }
-
-        return results
-    }
-
-    /// Search contacts by nickname
-    private func searchByNickname(_ query: String) throws -> [CNContact] {
-        let queryLower = query.lowercased()
-        var results: [CNContact] = []
-
-        let request = CNContactFetchRequest(keysToFetch: Self.basicKeys)
-        try store.enumerateContacts(with: request) { contact, _ in
-            if contact.nickname.lowercased().contains(queryLower) {
-                results.append(contact)
-            }
-        }
-
-        return results
-    }
-
-    /// Search contacts by email
-    func searchByEmail(_ query: String) throws -> [CNContact] {
-        // Try predicate match first (exact email)
-        let predicate = CNContact.predicateForContacts(matchingEmailAddress: query)
-        if let contacts = try? store.unifiedContacts(matching: predicate, keysToFetch: Self.basicKeys),
-           !contacts.isEmpty
-        {
-            return contacts
-        }
-
-        // Fall back to contains search
-        let queryLower = query.lowercased()
-        var results: [CNContact] = []
-
-        let keys = Self.basicKeys + [CNContactEmailAddressesKey as CNKeyDescriptor]
-        let request = CNContactFetchRequest(keysToFetch: keys)
-        try store.enumerateContacts(with: request) { contact, _ in
-            for email in contact.emailAddresses {
-                if (email.value as String).lowercased().contains(queryLower) {
-                    results.append(contact)
-                    break
-                }
-            }
-        }
-
-        return results
-    }
-
-    /// Search contacts by phone number
-    func searchByPhone(_ query: String) throws -> [CNContact] {
-        // Normalize query - keep only digits and +
-        let normalizedQuery = query.filter { $0.isNumber || $0 == "+" }
-
-        // Try predicate match first
-        let phoneNumber = CNPhoneNumber(stringValue: query)
-        let predicate = CNContact.predicateForContacts(matching: phoneNumber)
-        if let contacts = try? store.unifiedContacts(matching: predicate, keysToFetch: Self.basicKeys),
-           !contacts.isEmpty
-        {
-            return contacts
-        }
-
-        // Fall back to contains search
-        var results: [CNContact] = []
-
-        let keys = Self.basicKeys + [CNContactPhoneNumbersKey as CNKeyDescriptor]
-        let request = CNContactFetchRequest(keysToFetch: keys)
-        try store.enumerateContacts(with: request) { contact, _ in
-            for phone in contact.phoneNumbers {
-                let phoneDigits = phone.value.stringValue.filter { $0.isNumber || $0 == "+" }
-                if phoneDigits.contains(normalizedQuery) {
-                    results.append(contact)
-                    break
-                }
-            }
-        }
-
-        return results
-    }
-
-    /// Search contacts by organization
-    func searchByOrganization(_ query: String) throws -> [CNContact] {
-        let queryLower = query.lowercased()
-        var results: [CNContact] = []
-
-        let request = CNContactFetchRequest(keysToFetch: Self.basicKeys)
-        try store.enumerateContacts(with: request) { contact, _ in
-            if contact.organizationName.lowercased().contains(queryLower) {
-                results.append(contact)
-            }
-        }
-
-        return results
-    }
-
-    /// Search contacts by address
-    func searchByAddress(_ query: String) throws -> [CNContact] {
-        let queryLower = query.lowercased()
-        var results: [CNContact] = []
-
-        let keys = Self.basicKeys + [CNContactPostalAddressesKey as CNKeyDescriptor]
-        let request = CNContactFetchRequest(keysToFetch: keys)
-        try store.enumerateContacts(with: request) { contact, _ in
-            for address in contact.postalAddresses {
-                let formatted = CNPostalAddressFormatter.string(from: address.value, style: .mailingAddress)
-                if formatted.lowercased().contains(queryLower) {
-                    results.append(contact)
-                    break
-                }
-            }
-        }
-
-        return results
-    }
-
-    /// Search contacts by birthday
-    func searchByBirthday(month: Int?, day: Int?) throws -> [CNContact] {
-        var results: [CNContact] = []
-
-        let keys = Self.basicKeys + [CNContactBirthdayKey as CNKeyDescriptor]
-        let request = CNContactFetchRequest(keysToFetch: keys)
-        try store.enumerateContacts(with: request) { contact, _ in
-            guard let birthday = contact.birthday else { return }
-
-            var matches = true
-            if let m = month, birthday.month != m {
-                matches = false
-            }
-            if let d = day, birthday.day != d {
-                matches = false
-            }
-
-            if matches && (month != nil || day != nil) {
-                results.append(contact)
-            }
-        }
-
-        return results
-    }
-
-    /// Search across all fields
-    func searchAll(_ query: String) throws -> [CNContact] {
-        let queryLower = query.lowercased()
-        var seen = Set<String>()
-        var results: [CNContact] = []
-
-        // First do fast name search
-        let byName = try searchByName(query)
-        for contact in byName {
-            if !seen.contains(contact.identifier) {
-                seen.insert(contact.identifier)
-                results.append(contact)
-            }
-        }
-
-        // Then search other fields
-        let keys: [CNKeyDescriptor] = Self.basicKeys + [
-            CNContactPhoneNumbersKey as CNKeyDescriptor,
-            CNContactEmailAddressesKey as CNKeyDescriptor,
-            CNContactPostalAddressesKey as CNKeyDescriptor,
-        ]
-
-        let request = CNContactFetchRequest(keysToFetch: keys)
-        try store.enumerateContacts(with: request) { contact, _ in
-            if seen.contains(contact.identifier) { return }
-
-            // Check organization
-            if contact.organizationName.lowercased().contains(queryLower) {
-                seen.insert(contact.identifier)
-                results.append(contact)
-                return
-            }
-
-            // Check emails
-            for email in contact.emailAddresses {
-                if (email.value as String).lowercased().contains(queryLower) {
-                    seen.insert(contact.identifier)
-                    results.append(contact)
-                    return
-                }
-            }
-
-            // Check phones
-            for phone in contact.phoneNumbers {
-                if phone.value.stringValue.contains(query) {
-                    seen.insert(contact.identifier)
-                    results.append(contact)
-                    return
-                }
-            }
-
-            // Check addresses
-            for address in contact.postalAddresses {
-                let formatted = CNPostalAddressFormatter.string(from: address.value, style: .mailingAddress)
-                if formatted.lowercased().contains(queryLower) {
-                    seen.insert(contact.identifier)
-                    results.append(contact)
-                    return
-                }
-            }
-        }
-
         return results
     }
 
@@ -316,21 +122,32 @@ final class ContactsService {
         return contacts.first
     }
 
-    /// Get a contact by name (returns first match, prefers exact)
-    func getContact(name: String) throws -> CNContact? {
-        let predicate = CNContact.predicateForContacts(matchingName: name)
-        let contacts = try store.unifiedContacts(matching: predicate, keysToFetch: Self.fullKeys)
+    /// Get the one contact a name refers to. An exact full-name match wins;
+    /// otherwise the name must match exactly one contact, or this throws
+    /// `ambiguous` with the candidates so nobody acts on the wrong person.
+    func getContact(name: String) throws -> CNContact {
+        let candidates = try search(SearchCriteria(term: name))
+        let wanted = Match.fold(name)
+        let exact = candidates.filter { Match.fold($0.fullName) == wanted }
 
-        // Prefer exact match
-        let nameLower = name.lowercased()
-        for contact in contacts {
-            let fullName = contact.fullName.lowercased()
-            if fullName == nameLower {
-                return contact
-            }
+        let chosen: CNContact
+        if exact.count == 1 {
+            chosen = exact[0]
+        } else if candidates.count == 1 {
+            chosen = candidates[0]
+        } else if candidates.isEmpty {
+            throw ContactsError.contactNotFound
+        } else {
+            throw ContactsError.ambiguous((exact.isEmpty ? candidates : exact).map { c in
+                let org = c.organizationName.isEmpty ? "" : " (\(c.organizationName))"
+                return "\(c.fullName)\(org)  --id \(c.identifier)"
+            })
         }
 
-        return contacts.first
+        guard let full = try getContact(id: chosen.identifier) else {
+            throw ContactsError.contactNotFound
+        }
+        return full
     }
 
     // MARK: - List Operations
@@ -339,14 +156,15 @@ final class ContactsService {
     func listContacts(limit: Int? = nil) throws -> [CNContact] {
         var results: [CNContact] = []
 
-        let request = CNContactFetchRequest(keysToFetch: Self.basicKeys)
+        let request = CNContactFetchRequest(keysToFetch: Self.summaryKeys)
         request.sortOrder = .userDefault
 
         try store.enumerateContacts(with: request) { contact, stop in
-            results.append(contact)
             if let limit, results.count >= limit {
                 stop.pointee = true
+                return
             }
+            results.append(contact)
         }
 
         return results
@@ -360,13 +178,23 @@ final class ContactsService {
     /// List contacts in a group
     func listContactsInGroup(_ group: CNGroup) throws -> [CNContact] {
         let predicate = CNContact.predicateForContactsInGroup(withIdentifier: group.identifier)
-        return try store.unifiedContacts(matching: predicate, keysToFetch: Self.basicKeys)
+        return try store.unifiedContacts(matching: predicate, keysToFetch: Self.summaryKeys)
+            .sorted { $0.fullName.localizedStandardCompare($1.fullName) == .orderedAscending }
     }
 
-    /// Get group by name
-    func getGroup(name: String) throws -> CNGroup? {
+    /// Get a group by name (case-insensitive) or identifier
+    func getGroup(name: String?, id: String?) throws -> CNGroup {
         let groups = try listGroups()
-        return groups.first { $0.name == name }
+        if let id {
+            guard let group = groups.first(where: { $0.identifier == id }) else { throw ContactsError.groupNotFound }
+            return group
+        }
+        let matches = groups.filter { $0.name.compare(name ?? "", options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }
+        if matches.count > 1 {
+            throw ContactsError.ambiguousGroup(matches.map { "\($0.name)  \($0.identifier)" })
+        }
+        guard let group = matches.first else { throw ContactsError.groupNotFound }
+        return group
     }
 
     // MARK: - Export Operations
@@ -392,6 +220,138 @@ final class ContactsService {
     }
 }
 
+// MARK: - Search criteria
+
+struct SearchCriteria {
+    var term: String?
+    var email: String?
+    var phone: String?
+    var org: String?
+    var address: String?
+    var any: String?
+    var birthday: BirthdayFilter?
+    var birthdayMonth: Int?
+
+    var isEmpty: Bool {
+        term == nil && email == nil && phone == nil && org == nil && address == nil && any == nil
+            && birthday == nil && birthdayMonth == nil
+    }
+
+    func matches(_ c: CNContact) -> Bool {
+        if let term, !Match.name(c, term) { return false }
+        if let email, !Match.email(c, email) { return false }
+        if let phone, !Match.phone(c, phone) { return false }
+        if let org, !Match.text(c.organizationName, org) { return false }
+        if let address, !Match.address(c, address) { return false }
+        if let any, !Match.any(c, any) { return false }
+        if let birthday, !birthday.matches(c.birthday) { return false }
+        if let birthdayMonth, c.birthday?.month != birthdayMonth { return false }
+        return true
+    }
+}
+
+struct BirthdayFilter {
+    let month: Int
+    let day: Int
+    let year: Int?
+
+    /// Accepts MM-DD, M-D, MM/DD, DD.MM, --MM-DD and YYYY-MM-DD.
+    init(parsing input: String) throws {
+        let s = input.trimmingCharacters(in: .whitespaces)
+        var year: Int?
+        var month: Int?
+        var day: Int?
+        let dash = s.hasPrefix("--") ? String(s.dropFirst(2)) : s
+        if dash.contains(".") {
+            let p = dash.split(separator: ".")
+            if p.count == 2 { day = Int(p[0]); month = Int(p[1]) }
+        } else {
+            let p = dash.split(whereSeparator: { $0 == "-" || $0 == "/" })
+            if p.count == 3, p[0].count == 4 { year = Int(p[0]); month = Int(p[1]); day = Int(p[2]) }
+            else if p.count == 2 { month = Int(p[0]); day = Int(p[1]) }
+        }
+        guard let month, let day, (1...12).contains(month), (1...31).contains(day) else {
+            throw ValidationError("Invalid --birthday \"\(input)\". Use MM-DD (e.g. 01-25), DD.MM or YYYY-MM-DD.")
+        }
+        self.month = month
+        self.day = day
+        self.year = year
+    }
+
+    func matches(_ birthday: DateComponents?) -> Bool {
+        guard let birthday, birthday.month == month, birthday.day == day else { return false }
+        if let year, let theirs = birthday.year { return theirs == year }
+        return true
+    }
+}
+
+/// Text matching that ignores case and accents and treats the ASCII
+/// spellings of æ/ø/å ("ae", "o"/"oe", "a"/"aa") as equal to the letters.
+enum Match {
+    static func fold(_ s: String) -> String {
+        s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .lowercased()
+            .replacingOccurrences(of: "æ", with: "ae")
+            .replacingOccurrences(of: "ø", with: "o")
+            .replacingOccurrences(of: "oe", with: "o")
+            .replacingOccurrences(of: "aa", with: "a")
+    }
+
+    static func text(_ haystack: String, _ needle: String) -> Bool {
+        !haystack.isEmpty && fold(haystack).contains(fold(needle))
+    }
+
+    static func name(_ c: CNContact, _ q: String) -> Bool {
+        let names = [
+            c.fullName,
+            "\(c.givenName) \(c.familyName)",
+            "\(c.familyName) \(c.givenName)",
+            "\(c.givenName) \(c.middleName) \(c.familyName)",
+            c.nickname,
+        ]
+        return names.contains { text($0, q) }
+    }
+
+    static func email(_ c: CNContact, _ q: String) -> Bool {
+        c.emailAddresses.contains { text($0.value as String, q) }
+    }
+
+    static func address(_ c: CNContact, _ q: String) -> Bool {
+        c.postalAddresses.contains {
+            text(CNPostalAddressFormatter.string(from: $0.value, style: .mailingAddress), q)
+        }
+    }
+
+    /// Digits only, with an international "00" prefix dropped.
+    static func digits(_ s: String) -> String {
+        var d = s.filter(\.isASCII).filter(\.isNumber)
+        if d.hasPrefix("00") { d.removeFirst(2) }
+        return d
+    }
+
+    /// Matches regardless of spaces, "+47"/"0047" prefixes or their absence:
+    /// with 8+ digits the last 8 must match (a Norwegian number, or the
+    /// subscriber part of most others); shorter queries match anywhere.
+    static func phone(_ c: CNContact, _ q: String) -> Bool {
+        let query = digits(q)
+        guard !query.isEmpty else { return false }
+        return c.phoneNumbers.contains { labeled in
+            let stored = digits(labeled.value.stringValue)
+            if query.count >= 8, stored.count >= 8 {
+                return stored.hasSuffix(String(query.suffix(8)))
+            }
+            return stored.contains(query)
+        }
+    }
+
+    static func any(_ c: CNContact, _ q: String) -> Bool {
+        if name(c, q) || text(c.organizationName, q) || email(c, q) || address(c, q) { return true }
+        // Only treat the query as a phone number when it mostly is one.
+        let digitCount = q.filter(\.isNumber).count
+        return digitCount >= 3 && digitCount * 2 >= q.filter { !$0.isWhitespace }.count && phone(c, q)
+    }
+}
+
 // MARK: - Errors
 
 enum ContactsError: Error, CustomStringConvertible {
@@ -399,18 +359,61 @@ enum ContactsError: Error, CustomStringConvertible {
     case contactNotFound
     case groupNotFound
     case exportFailed
+    case ambiguous([String])
+    case ambiguousGroup([String])
 
     var description: String {
         switch self {
         case .accessDenied:
-            return "Access to Contacts denied. Please grant access in System Settings > Privacy & Security > Contacts."
+            return "Access to Contacts denied. Grant it in System Settings > Privacy & Security > Contacts, or run `apple-contacts permissions`."
         case .contactNotFound:
             return "Contact not found"
         case .groupNotFound:
             return "Group not found"
         case .exportFailed:
             return "Failed to export contact"
+        case .ambiguous(let lines):
+            return "\(lines.count) contacts match; pick one with --id:\n"
+                + lines.prefix(20).map { "  " + $0 }.joined(separator: "\n")
+        case .ambiguousGroup(let lines):
+            return "Several groups match; use --group-id with one of:\n"
+                + lines.map { "  " + $0 }.joined(separator: "\n")
         }
+    }
+}
+
+// MARK: - JSON
+
+enum JSON {
+    /// Pretty JSON with stable key order.
+    static func print(_ object: Any) {
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
+            let string = String(data: data, encoding: .utf8)
+        else { return }
+        Swift.print(string)
+    }
+
+    /// Fields shared by search and list rows.
+    static func summary(_ c: CNContact) -> [String: Any] {
+        var row: [String: Any] = [
+            "id": c.identifier,
+            "name": c.fullName,
+            "firstName": c.givenName,
+            "lastName": c.familyName,
+            "nickname": c.nickname,
+            "organization": c.organizationName,
+        ]
+        if c.isKeyAvailable(CNContactPhoneNumbersKey) {
+            row["phones"] = c.phoneNumbers.map { $0.value.stringValue }
+        }
+        if c.isKeyAvailable(CNContactEmailAddressesKey) {
+            row["emails"] = c.emailAddresses.map { $0.value as String }
+        }
+        if c.isKeyAvailable(CNContactBirthdayKey), let birthday = c.birthdayString {
+            row["birthday"] = birthday
+        }
+        return row
     }
 }
 
@@ -423,22 +426,11 @@ extension CNContact {
             ?? "\(givenName) \(familyName)".trimmingCharacters(in: .whitespaces)
     }
 
-    /// Birthday as string (YYYY-MM-DD or --MM-DD if no year)
+    /// Birthday as YYYY-MM-DD, or --MM-DD when the year is unknown
     var birthdayString: String? {
-        guard let birthday else { return nil }
-        var components: [String] = []
-        if let year = birthday.year {
-            components.append(String(format: "%04d", year))
-        } else {
-            components.append("----")
-        }
-        if let month = birthday.month {
-            components.append(String(format: "%02d", month))
-        }
-        if let day = birthday.day {
-            components.append(String(format: "%02d", day))
-        }
-        return components.joined(separator: "-")
+        guard let birthday, let month = birthday.month, let day = birthday.day else { return nil }
+        let year = birthday.year.map { String(format: "%04d", $0) } ?? "-"
+        return "\(year)-\(String(format: "%02d", month))-\(String(format: "%02d", day))"
     }
 
     /// First phone number

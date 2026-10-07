@@ -18,13 +18,8 @@ struct Groups: ParsableCommand {
     var json = false
 
     func run() throws {
+        try ContactsService.requireAccess()
         let service = ContactsService()
-
-        // Check access
-        let status = CNContactStore.authorizationStatus(for: .contacts)
-        if status == .denied || status == .restricted {
-            throw ContactsError.accessDenied
-        }
 
         let groups = try service.listGroups()
 
@@ -66,10 +61,6 @@ struct Groups: ParsableCommand {
             ]
         }
 
-        if let jsonData = try? JSONSerialization.data(withJSONObject: data, options: .prettyPrinted),
-           let jsonString = String(data: jsonData, encoding: .utf8)
-        {
-            print(jsonString)
-        }
+        JSON.print(data)
     }
 }

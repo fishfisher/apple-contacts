@@ -7,14 +7,17 @@ struct Search: ParsableCommand {
         abstract: "Search contacts by name or other criteria",
         discussion: """
             Search for contacts using various criteria.
-            Without flags, searches by name/nickname (fast).
-            Multiple flags are combined with AND logic.
+            The term matches anywhere in the name or nickname, ignoring case
+            and accents (ø/æ/å also match o/ae/a). Flags narrow the result;
+            all criteria, including --any, must match.
+            Phone numbers match with or without spaces and +47/0047.
 
             Examples:
               apple-contacts search fisher
               apple-contacts search --email "@company.com"
               apple-contacts search --phone "+47"
               apple-contacts search --org "Acme"
+              apple-contacts search --phone "900 00 000"
               apple-contacts search --birthday 01-25
               apple-contacts search --birthday-month 1
             """
@@ -26,7 +29,7 @@ struct Search: ParsableCommand {
     @Option(name: .long, help: "Search by email (contains)")
     var email: String?
 
-    @Option(name: .long, help: "Search by phone number (contains)")
+    @Option(name: .long, help: "Search by phone number (ignores spaces and country code)")
     var phone: String?
 
     @Option(name: .long, help: "Search by organization (contains)")
@@ -35,7 +38,7 @@ struct Search: ParsableCommand {
     @Option(name: .long, help: "Search in addresses (contains)")
     var address: String?
 
-    @Option(name: .long, help: "Search by birthday (MM-DD format)")
+    @Option(name: .long, help: "Search by birthday (MM-DD, DD.MM or YYYY-MM-DD)")
     var birthday: String?
 
     @Option(name: .long, help: "Search by birthday month (1-12)")
@@ -51,87 +54,32 @@ struct Search: ParsableCommand {
     var json = false
 
     func run() throws {
-        let service = ContactsService()
-
-        // Check access synchronously for CLI
-        let status = CNContactStore.authorizationStatus(for: .contacts)
-        if status == .denied || status == .restricted {
-            throw ContactsError.accessDenied
+        if let limit, limit < 1 { throw ValidationError("--limit must be at least 1") }
+        if let birthdayMonth, !(1...12).contains(birthdayMonth) {
+            throw ValidationError("--birthday-month must be 1-12")
         }
 
-        var results: [CNContact] = []
-
-        // Determine search type and execute
-        if let any = any {
-            results = try service.searchAll(any)
-        } else if let term = term {
-            // Name search (includes nickname)
-            var nameResults = try service.searchByName(term)
-
-            // Apply additional filters if provided
-            nameResults = try applyFilters(to: nameResults, service: service)
-            results = nameResults
-        } else if email != nil || phone != nil || org != nil ||
-                    address != nil || birthday != nil || birthdayMonth != nil
-        {
-            // Start with all contacts and filter
-            results = try service.listContacts()
-            results = try applyFilters(to: results, service: service)
-        } else {
+        let criteria = SearchCriteria(
+            term: term, email: email, phone: phone, org: org, address: address, any: any,
+            birthday: try birthday.map { try BirthdayFilter(parsing: $0) },
+            birthdayMonth: birthdayMonth
+        )
+        if criteria.isEmpty {
             throw ValidationError("Please provide a search term or use search flags (--email, --org, etc.)")
         }
 
-        // Apply limit
-        if let limit = limit, results.count > limit {
+        try ContactsService.requireAccess()
+        var results = try ContactsService().search(criteria)
+
+        if let limit, results.count > limit {
             results = Array(results.prefix(limit))
         }
 
-        // Output
         if json {
-            printJSON(results)
+            JSON.print(results.map(JSON.summary))
         } else {
             printTable(results)
         }
-    }
-
-    private func applyFilters(to contacts: [CNContact], service: ContactsService) throws -> [CNContact] {
-        var filtered = contacts
-
-        if let email = email {
-            let emailMatches = Set(try service.searchByEmail(email).map(\.identifier))
-            filtered = filtered.filter { emailMatches.contains($0.identifier) }
-        }
-
-        if let phone = phone {
-            let phoneMatches = Set(try service.searchByPhone(phone).map(\.identifier))
-            filtered = filtered.filter { phoneMatches.contains($0.identifier) }
-        }
-
-        if let org = org {
-            let orgMatches = Set(try service.searchByOrganization(org).map(\.identifier))
-            filtered = filtered.filter { orgMatches.contains($0.identifier) }
-        }
-
-        if let address = address {
-            let addrMatches = Set(try service.searchByAddress(address).map(\.identifier))
-            filtered = filtered.filter { addrMatches.contains($0.identifier) }
-        }
-
-        if let birthday = birthday {
-            // Parse MM-DD format
-            let parts = birthday.split(separator: "-")
-            if parts.count == 2, let month = Int(parts[0]), let day = Int(parts[1]) {
-                let bdayMatches = Set(try service.searchByBirthday(month: month, day: day).map(\.identifier))
-                filtered = filtered.filter { bdayMatches.contains($0.identifier) }
-            }
-        }
-
-        if let birthdayMonth = birthdayMonth {
-            let bdayMatches = Set(try service.searchByBirthday(month: birthdayMonth, day: nil).map(\.identifier))
-            filtered = filtered.filter { bdayMatches.contains($0.identifier) }
-        }
-
-        return filtered
     }
 
     private func printTable(_ contacts: [CNContact]) {
@@ -156,24 +104,5 @@ struct Search: ParsableCommand {
         }
 
         print("\nFound \(contacts.count) contact(s)")
-    }
-
-    private func printJSON(_ contacts: [CNContact]) {
-        let data = contacts.map { contact -> [String: Any] in
-            [
-                "id": contact.identifier,
-                "name": contact.fullName,
-                "firstName": contact.givenName,
-                "lastName": contact.familyName,
-                "nickname": contact.nickname,
-                "organization": contact.organizationName,
-            ]
-        }
-
-        if let jsonData = try? JSONSerialization.data(withJSONObject: data, options: .prettyPrinted),
-           let jsonString = String(data: jsonData, encoding: .utf8)
-        {
-            print(jsonString)
-        }
     }
 }

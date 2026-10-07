@@ -25,27 +25,12 @@ struct Export: ParsableCommand {
     var output: String?
 
     func run() throws {
-        let service = ContactsService()
-
-        // Check access
-        let status = CNContactStore.authorizationStatus(for: .contacts)
-        if status == .denied || status == .restricted {
-            throw ContactsError.accessDenied
-        }
-
-        var contact: CNContact?
-
-        if let id = id {
-            contact = try service.getContact(id: id)
-        } else if let name = name {
-            contact = try service.getContact(name: name)
-        } else {
+        guard id != nil || name != nil else {
             throw ValidationError("Please provide a contact name or --id")
         }
-
-        guard let contact else {
-            throw ContactsError.contactNotFound
-        }
+        try ContactsService.requireAccess()
+        let service = ContactsService()
+        let contact = try resolveContact(name: name, id: id)
 
         let vcard = try service.exportVCardString(contact: contact)
 
@@ -55,8 +40,8 @@ struct Export: ParsableCommand {
             try vcard.write(to: url, atomically: true, encoding: .utf8)
             print("Exported to \(outputPath)")
         } else {
-            // Write to stdout
-            print(vcard)
+            // Write to stdout (the vCard already ends with a line break)
+            print(vcard, terminator: "")
         }
     }
 }
