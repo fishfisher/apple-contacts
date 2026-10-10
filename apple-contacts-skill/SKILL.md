@@ -1,7 +1,7 @@
 ---
 name: apple-contacts
 description: Search and view Apple Contacts from the command line using apple-contacts CLI. Use when asked to search, list, show, or export contacts, find birthdays, browse contact groups, or look up people by name, email, phone, organization, or address. Read-only access using Apple's native Contacts Framework for fast, reliable lookups.
-metadata: {"clawdbot":{"emoji":"📇","requires":{"bins":["apple-contacts"]},"install":[{"id":"brew","kind":"brew","formula":"fishfisher/tap/apple-contacts","bins":["apple-contacts"],"label":"Install apple-contacts (Homebrew)"}]}}
+metadata: {"clawdbot":{"emoji":"📇","requires":{"bins":["apple-contacts"]}}}
 ---
 
 # Apple Contacts
@@ -11,7 +11,7 @@ Read-only access to Apple Contacts through the native Contacts framework.
 ## Install
 
 ```bash
-brew install fishfisher/tap/apple-contacts
+fishtools install apple-contacts   # upgrade: fishtools upgrade apple-contacts
 apple-contacts permissions   # asks for Contacts access once
 ```
 

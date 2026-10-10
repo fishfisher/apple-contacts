@@ -15,10 +15,10 @@ A fast command-line interface for Apple Contacts that uses Apple's native Contac
 
 ## Installation
 
-### Homebrew
+### fishtools
 
 ```bash
-brew install fishfisher/tap/apple-contacts
+fishtools install apple-contacts   # later: fishtools upgrade apple-contacts
 ```
 
 ### From Source (Swift)

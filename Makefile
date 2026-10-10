@@ -19,7 +19,7 @@ skill:
 	  cat apple-contacts-skill/SKILL.md; echo; \
 	  echo '"""#'; echo '}'; } > Sources/EmbeddedSkill.swift
 
-# Release zip for the Homebrew formula (fishfisher/homebrew-tap).
+# Release zip for `gh release create` (installed with `fishtools install apple-contacts`).
 dist: skill release
 	rm -rf dist && mkdir -p dist
 	cp .build/release/apple-contacts dist/
