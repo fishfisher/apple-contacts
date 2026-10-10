@@ -6,7 +6,7 @@ struct AppleContacts: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "apple-contacts",
         abstract: "CLI tool to search and query Apple Contacts",
-        version: "0.4.0",
+        version: "0.4.1",
         subcommands: [
             Search.self,
             Show.self,
